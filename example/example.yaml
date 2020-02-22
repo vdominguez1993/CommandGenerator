@@ -1,0 +1,54 @@
+---
+commands:
+  get:
+    - subcommand: value1
+      function_type: enter_void_return_int
+      function: function_get_value1
+  giet_value1:
+    function_type: enter_void_return_int
+    function: function_get_value1
+  reset:
+    function_type: void_function
+    function: reset_function
+
+  set:
+    - subcommand: value1
+      function_type: enter_int_return_int
+      function: function_set_value1
+    - subcommand: value2
+      function_type: enter_float_return_int
+      function: function_set_value2
+    - subcommand: value3
+      function_type: enter_int_return_int
+      function: function_set_value3
+
+  set_value_1:
+    function_type: enter_int_return_int
+    function: function_set_value1
+
+function_types:
+  enter_int_return_int:
+    params:
+      - int
+    return: int
+
+  enter_void_return_int:
+    return: int
+    additional: printf("%d\r\n", result);
+
+  enter_int_return_void:
+    params:
+      - int
+
+  enter_float_return_int:
+    return: int
+    params:
+      - float
+
+  void_function:
+
+dependencies:
+  - <stdio.h>
+  - <string.h>
+  - <stdbool.h>
+  - '"interfaces.h"'

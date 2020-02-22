@@ -1,0 +1,193 @@
+{% for dependency in config_dict['dependencies'] -%}
+#include {{dependency}}
+{% endfor %}
+
+{% set scanf_dict = {'int' : '%d', 'float' : '%f'} %}
+
+{#- Function types #}
+{% for type in function_types -%}
+{% set return_key = function_types[type]['return'] -%}
+{% set return_type = return_key if return_key else 'void' -%}
+{% set params_key = function_types[type]['params'] -%}
+{% set params = ", ".join(params_key) if params_key else 'void' -%}
+typedef {{return_type}} (*{{type}})({{params}});
+{% endfor %}
+
+typedef void (* command_function_type)(const char * command, int length);
+
+{% for type in function_types -%}
+{% if function_types[type]['params'] %}
+static int process_{{type}}(const char * msg, int len, {{type}} function);
+{% endif -%}
+{% endfor %}
+
+{#- Function prototypes #}
+{% for command in config_dict['commands'] %}
+static void process_{{command}}(const char * command, int length);
+{% endfor %}
+
+static struct commands_struct{
+    int length;
+    const char * command;
+    command_function_type function;
+    int has_subcommand;
+} commands_available[] = {
+{% for command in config_dict['commands'] -%}
+    {% set has_subcommand = '0' if config_dict['commands'][command]['function'] else '1' -%}
+    { {{command|length}}, "{{command}}", &process_{{command}}, {{has_subcommand}}},
+{% endfor -%}
+};
+
+static const int number_of_commands = sizeof(commands_available) / sizeof (struct commands_struct);
+
+{#- Function implementation #}
+
+{% for type in function_types -%}
+{% if function_types[type]['params'] %}
+static int process_{{type}}(const char * msg, int len, {{type}} function)
+{
+    int retval = -1;
+    {% set ns = namespace(scanf_text = "", scanf_text_printable = "", variables = "", v_pointers = "") -%}
+    {% for param in function_types[type]['params'] -%}
+    {{param}} variable_{{loop.index}} = 0;
+    {% set ns.scanf_text = ns.scanf_text + " " + scanf_dict[param] -%}
+    {% set ns.scanf_text_printable = ns.scanf_text_printable + " %" + scanf_dict[param] -%}
+    {% set ns.variables = ns.variables + ", variable_" + loop.index|string -%}
+    {% set ns.v_pointers = ns.v_pointers + ", &variable_" + loop.index|string -%}
+    {% endfor -%}
+    {% set ns.variables = ns.variables[2:] -%}
+    {% set ns.v_pointers = ns.v_pointers[2:] -%}
+
+    if (len != 0) {
+        int retvalue = sscanf(msg, "{{ns.scanf_text}}", {{ns.v_pointers}});
+        if (retvalue == {{function_types[type]['params']|length}}) {
+            {% set return_text = function_types[type]['return'] + " result = " if function_types[type]['return'] else ""-%}
+            {{return_text}}function({{ns.variables}});
+            {% if function_types[type]['additional'] -%}
+                {{function_types[type]['additional']}}
+            {% endif -%}
+            retval = 0;
+        }
+        else {
+            printf("ERROR Expected: %d params, parsed: %d for {{ns.scanf_text_printable}}\r\n",{{function_types[type]['params']|length}},retvalue);
+        }
+    }
+    else {
+        printf("ERROR Please specify params matching {{ns.scanf_text_printable}}\r\n");
+    }
+
+    return retval;
+}
+{% endif %}
+{% endfor %}
+
+{% for command in config_dict['commands'] %}
+{% set command_params = config_dict['commands'][command] %}
+static void process_{{command}}(const char * command, int length)
+{
+    int parent_len = {{command|length}};
+    {% if command_params['function'] -%}
+    {% set function_type = function_types[command_params['function_type']] -%}
+    {# Function does not have subcommands -#}
+    {% if function_type['params'] -%}
+    {# Function accepts params -#}
+    int result_process = process_{{command_params['function_type']}}(&command[parent_len], length - parent_len, &{{command_params['function']}});
+    if (result_process == 0) {
+        printf("OK!\r\n");
+    }
+    {% else -%}
+    {# Function doesn't accept params -#}
+    if (length == parent_len) {
+        {% if function_type['return'] -%}
+        {{function_type['return']}} result = {{command_params['function']}}();
+        {% else -%}
+        {{command_params['function']}}();
+        printf("OK!\r\n");
+        {% endif -%}
+        {% if function_type['additional'] -%}
+        {{function_type['additional']}}
+        {%- endif %}
+    } else {
+        printf("ERROR {{command}} doesn't accept values\r\n");
+    }
+    {%- endif -%}
+    {% else -%}
+    {# Function has subcommands -#}
+    const char * available_commands = "{% for subcommand in command_params %} {{subcommand['subcommand']}}{% endfor %}\r\n";
+    if (length < (parent_len + 1)) {
+        printf("ERROR {{command}} needs a subcommand, availables are:\r\n");
+        printf("%s", available_commands);
+    } else {
+        {% set used_func_types = get_function_types(command_params) -%}
+        int subcommand_found = 0;
+        {% for function_type in used_func_types %}
+        const struct subcommands_{{function_type}}_s{
+            int len;
+            const char * name;
+            {{function_type}} function;
+        } list_{{function_type}}[] = {
+            {% set ns = namespace(subcommand_number = 0) -%}
+            {% for subcommand in command_params -%}
+            {% if subcommand['function_type'] == function_type -%}
+            {% set ns.subcommand_number = ns.subcommand_number + 1 -%}
+            { {{(subcommand['subcommand']|length) + 1}}," {{subcommand['subcommand']}}", &{{subcommand['function']}}},
+            {% endif -%}
+            {%- endfor %}
+        };
+
+        const int list_{{function_type}}_size = {{ns.subcommand_number}};
+        {% endfor %}
+
+        {%- for function_type in used_func_types %}
+        for (int i = 0; (i < list_{{function_type}}_size) && (subcommand_found == 0); i++) {
+            int size_subcommand = list_{{function_type}}[i].len;
+            if ((length - parent_len) >= size_subcommand) {
+                if (strncmp( &command[parent_len], list_{{function_type}}[i].name, size_subcommand) == 0) {
+                    int value_pos = size_subcommand + parent_len;
+                    {% set return_type =  (function_types[function_type]['return'] + ' result = ') if function_types[function_type]['return'] else '' -%}
+                    {% if function_types[function_type]['params'] -%}
+                    int result_process = process_{{function_type}}(&command[value_pos], length - value_pos, list_{{function_type}}[i].function);
+                    if (result_process == 0) {
+                        printf("OK!\r\n");
+                    }
+                    {% else -%}
+                    list_{{function_type}}[i].function();
+                    printf("OK!\r\n");
+                    {% endif -%}
+                    subcommand_found = 1;
+                    break;
+                }
+            }
+        }
+        {% endfor %}
+
+        if (subcommand_found != 1) {
+            printf("ERROR command not found, availables are:\r\n");
+            printf("%s", available_commands);
+        }
+    }
+
+    {%- endif %}
+}
+{% endfor %}
+
+void process_command(const char * command, int command_len)
+{
+    int command_found = -1;
+    for(int i = 0; (i < number_of_commands); i++) {
+        int comp_len = commands_available[i].length;
+        if (command_len >= comp_len) {
+            if (strncmp(command, commands_available[i].command, comp_len) == 0) {
+                if ((command_len == comp_len) || (command[comp_len] == ' ')) {
+                    commands_available[i].function(command, command_len);
+                    command_found = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (command_found == -1) {
+        {{config_dict['on_command_error']}}
+    }
+}
